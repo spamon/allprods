@@ -1,0 +1,654 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pandas as pd
+import time
+import re
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Alignment, Font, Border, Side
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.utils import get_column_letter
+from openpyxl.cell.cell import MergedCell
+import win32api
+import win32print
+from datetime import datetime, timedelta
+
+def convert_to_mm(value):
+    print(f"Original value: {value}")  # Debug print
+
+    # Try to convert the value based on different measurement types
+    match_cm = re.search(r'(\d+(\.\d+)?)\s*cm', value, re.IGNORECASE)
+    match_mm = re.search(r'(\d+(\.\d+)?)\s*mm', value, re.IGNORECASE)
+    match_inch = re.search(r'(\d+(\.\d+)?)\s*inch', value, re.IGNORECASE)
+    
+    if match_cm:
+        numeric_value = float(match_cm.group(1))
+        converted_value = int(numeric_value * 10)  # Convert cm to mm
+        print(f"Converted from cm to mm: {converted_value}")  # Debug print
+        return converted_value
+    elif match_mm:
+        numeric_value = float(match_mm.group(1))
+        converted_value = int(numeric_value)  # Value is already in mm
+        print(f"Value in mm: {converted_value}")  # Debug print
+        return converted_value
+    elif match_inch:
+        numeric_value = float(match_inch.group(1))
+        converted_value = int(numeric_value * 25.4)  # Convert inches to mm
+        print(f"Converted from inches to mm: {converted_value}")  # Debug print
+        return converted_value
+    else:
+        try:
+            numeric_value = float(value)
+            print(f"Value in mm: {int(numeric_value)}")  # Debug print
+            return int(numeric_value)
+        except ValueError:
+            print("Conversion error: Invalid numeric value")  # Debug print
+            return None
+
+def calculate_sizes_vertical_blinds(product_data):
+    if product_data.get('Product Type') == 'Vertical Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Finished Size'] = 'Invalid Width'
+            product_data['Cut Rail Size'] = 'Invalid Width'
+            product_data['Qty Louvers'] = ''
+            return product_data
+
+        operation_type = product_data.get('Operation Types')
+        measurement_type = product_data.get('Measurement Type')
+
+        print(f"Operation Type: {operation_type}")
+
+        finished_size = cut_rail_size = 0
+        louver_drop_size = None  # Initialize louver_drop_size with None
+
+        if measurement_type == 'Recess':
+            finished_size = width - 10
+            louver_drop_size = convert_to_mm(product_data.get('Length', '0'))
+        elif measurement_type == 'Exact':
+            finished_size = width
+            louver_drop_size = convert_to_mm(product_data.get('Length', '0'))
+            if louver_drop_size is not None:
+                louver_drop_size += 10
+
+        if operation_type == 'Manual Operation':
+            cut_rail_size = finished_size - 20
+            product_data['Child Safety'] = 'Side Fix'
+        elif operation_type == 'Wand Operation' or operation_type == 'Want Operation':
+            print("Processing Want Operation")
+            cut_rail_size = finished_size - 10
+
+        product_data['Finished Size'] = f'{finished_size}mm'
+        product_data['Cut Rail Size'] = f'{cut_rail_size}mm'
+        product_data['Qty Louvers'] = ''
+
+        print("Louver Drop Size (Before):", product_data.get('Length'))
+
+        if louver_drop_size is not None:
+            product_data['Louver Drop Size'] = f'{louver_drop_size}mm'
+        else:
+            product_data['Louver Drop Size'] = 'Invalid Length'
+
+        print("Louver Drop Size (After):", product_data.get('Louver Drop Size'))
+
+    return product_data
+
+def calculate_sizes_allusion_blinds(product_data):
+    if product_data.get('Product Type') == 'Allusion Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Finished Size'] = 'Invalid Width'
+            product_data['Cut Rail Size'] = 'Invalid Width'
+            product_data['Qty Louvers'] = ''
+            return product_data
+
+        operation_type = product_data.get('Operation Types')
+        measurement_type = product_data.get('Measurement Type')
+
+        finished_size = cut_rail_size = 0
+        louver_drop_size = None  # Initialize louver_drop_size with None
+
+        if measurement_type == 'Recess':
+            finished_size = width - 10
+        elif measurement_type == 'Exact':
+            finished_size = width
+            louver_drop_size = convert_to_mm(product_data.get('Length', '0'))
+            if louver_drop_size is not None:
+                louver_drop_size += 10
+
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+        if length is not None:
+            adjusted_length = length - 12
+            louver_drop_size = adjusted_length
+            product_data['Length'] = f'{adjusted_length}mm'
+        else:
+            louver_drop_size = None
+            product_data['Louver Drop Size'] = 'Invalid Length'
+
+        if louver_drop_size is not None:
+            product_data['Louver Drop Size'] = f'{louver_drop_size}mm'
+
+        if operation_type == 'Manual Operation':
+            cut_rail_size = finished_size - 20
+        elif operation_type == 'Want Operation':
+            cut_rail_size = finished_size - 10
+
+        product_data['Finished Size'] = f'{finished_size}mm'
+        product_data['Cut Rail Size'] = f'{cut_rail_size}mm'
+        product_data['Qty Louvers'] = ''
+        
+        if louver_drop_size is not None:
+            product_data['Louver Drop Size'] = f'{louver_drop_size}mm'
+        else:
+            product_data['Louver Drop Size'] = 'Invalid Length'
+
+        product_data['Length'] = f'{length}mm'
+
+    return product_data
+
+def calculate_sizes_standard_roller_blinds(product_data):
+    if product_data.get('Product Type') == 'Roller Blind' and (product_data.get('Roller Type') == 'Standard Roller' or product_data.get('Roller Type') == 'Forward Roll Roller'):
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Fabric + Rail Width'] = 'Invalid Width'
+            product_data['Fabric Drop'] = 'Invalid Length'
+            return product_data
+
+        fabric_width = rail_width = width - 35
+
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+        fabric_drop = length + 300
+
+        product_data['Fabric + Rail Width'] = f'{fabric_width}mm'
+        product_data['Fabric Drop'] = f'{fabric_drop}mm'
+
+        product_data.pop('Fabric Width', None)
+        product_data.pop('Rail Width', None)
+        product_data.pop('Qty Louvers', None)
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
+
+def calculate_sizes_cassette_roller_blind(product_data):
+    if product_data.get('Product Type') == 'Roller Blind' and product_data.get('Roller Type') == 'Cassette Roller':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+
+        if width is None or length is None:
+            product_data['Cassette Size'] = 'Invalid Width'
+            product_data['Tube and Fabric Width'] = 'Invalid Width'
+            product_data['Fabric Drop'] = 'Invalid Length'
+            return product_data
+
+        measurement_type = product_data.get('Measurement Type')
+
+        if measurement_type == 'Exact':
+            cassette_size = width - 4
+            tube_and_fabric_width = width - 39
+        elif measurement_type == 'Recess':
+            cassette_size = width - 14
+            tube_and_fabric_width = width - 49
+
+        fabric_drop = length + 300
+
+        product_data['Cassette Size'] = f'{cassette_size}mm'
+        product_data['Tube and Fabric Width'] = f'{tube_and_fabric_width}mm'
+        product_data['Fabric Drop'] = f'{fabric_drop}mm'
+
+    return product_data
+
+def calculate_sizes_grip_fit_roller_blinds(product_data):
+    if product_data.get('Product Type') == 'Grip Fit Roller Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Cassette Width'] = 'Invalid Width'
+            product_data['Tube and Fabric Width'] = 'Invalid Width'
+            product_data['Fabric Drop'] = 'Invalid Length'
+            return product_data
+
+        cassette_width = width - 20
+        tube_and_fabric_width = width - 42
+
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+        fabric_drop = length + 300
+
+        product_data['Cassette Width'] = f'{cassette_width}mm'
+        product_data['Tube and Fabric Width'] = f'{tube_and_fabric_width}mm'
+        product_data['Fabric Drop'] = f'{fabric_drop}mm'
+
+        product_data.pop('Qty Louvers', None)
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
+
+def calculate_sizes_day_and_night_blinds(product_data):
+    if product_data.get('Product Type') == 'Day & Night Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Cassette Width'] = 'Invalid Width'
+            product_data['Tube and Fabric Width'] = 'Invalid Width'
+            product_data['In Bottom'] = 'Invalid Width'
+            product_data['Outer Bottom'] = 'Invalid Width'
+            return product_data
+
+        measurement_type = product_data.get('Measurement Type')
+
+        if measurement_type == 'Recess':
+            cassette_width = width - 14
+            tube_and_fabric_width = cassette_width - 35
+            in_bottom = cassette_width - 39
+            outer_bottom = cassette_width - 27
+        elif measurement_type == 'Exact':
+            cassette_width = width - 4
+            tube_and_fabric_width = cassette_width - 35
+            in_bottom = cassette_width - 39
+            outer_bottom = cassette_width - 27
+
+        length_str = product_data.get('Length', '0')
+        drop = convert_to_mm(length_str)
+
+        product_data['Cassette Width'] = f'{cassette_width}mm'
+        product_data['Tube and Fabric Width'] = f'{tube_and_fabric_width}mm'
+        product_data['In Bottom'] = f'{in_bottom}mm'
+        product_data['Outer Bottom'] = f'{outer_bottom}mm'
+        product_data['Drop'] = f'{drop}mm'
+
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
+
+def calculate_sizes_perfect_fit_pleated(product_data):
+    if product_data.get('Product Type') == 'Perfect Fit Pleated':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+
+        if width is None or length is None:
+            product_data['Fabric Width'] = 'Invalid Width'
+            product_data['Fabric Rail'] = 'Invalid Width'
+            product_data['Top and Bottom Frame'] = 'Invalid Width'
+            product_data['Side Frame'] = 'Invalid Length'
+            product_data['Cells'] = ''
+            product_data['Cord Colour'] = ''
+            product_data['Bracket Qty'] = ''
+            product_data['Num of Cords'] = ''
+            return product_data
+
+        fabric_width = fabric_rail = width - 16
+        top_bottom_frame = width - 28
+        side_frame = length - 28
+
+        product_data['Fabric Width'] = f'{fabric_width}mm'
+        product_data['Fabric Rail'] = f'{fabric_rail}mm'
+        product_data['Top and Bottom Frame'] = f'{top_bottom_frame}mm'
+        product_data['Side Frame'] = f'{side_frame}mm'
+        product_data['Cells'] = ''
+        product_data['Cord Colour'] = ''
+        product_data['Bracket Qty'] = ''
+        product_data['Num of Cords'] = ''
+
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
+
+def calculate_sizes_roman_blinds(product_data):
+    if product_data.get('Product Type') == 'Roman Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Finished Width'] = 'Invalid Width'
+            return product_data
+
+        measurement_type = product_data.get('Measurement Type')
+
+        finished_width = width
+
+        if measurement_type == 'Recess':
+            finished_width -= 10
+
+        drop_str = product_data.get('Length', '0')
+        length = convert_to_mm(drop_str)
+        if length is None:
+            product_data['Finished Drop'] = 'Invalid Drop'
+        else:
+            product_data['Finished Length'] = f'{length}mm'
+
+        product_data['Finished Width'] = f'{finished_width}mm'
+        
+        product_data.pop('Width', None)
+        product_data.pop('Length', None)
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
+
+def calculate_sizes_vertical_blind_slats(product_data):
+    height_str = product_data.get('Height required', '0')
+    height = convert_to_mm(height_str)
+
+    if height is None:
+        product_data['Adjusted Height'] = 'Invalid Height'
+    else:
+        adjusted_height = height + 50
+        product_data['Adjusted Height'] = f'{adjusted_height}mm'
+
+    return product_data
+
+def calculate_sizes_perfect_fit_day_and_night(product_data):
+    if product_data.get('Product Type') == 'Perfect Fit Day & Night Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+
+        if width is None or length is None:
+            product_data['Frame Width'] = 'Invalid Width'
+            product_data['Tube and Fabric Width'] = 'Invalid Width'
+            product_data['Inner Bottom Bar'] = 'Invalid Width'
+            product_data['Outer Bottom Bar'] = 'Invalid Width'
+            product_data['Frame Side'] = 'Invalid Length'
+            product_data['Fabric Length'] = 'Invalid Length'
+            return product_data
+
+        frame_width = width - 28
+        tube_and_fabric_width = width - 18
+        inner_bottom_bar = width - 28
+        outer_bottom_bar = width - 16
+        frame_side = length - 55
+        fabric_length = length
+
+        product_data['Frame Width'] = f'{frame_width}mm'
+        product_data['Tube and Fabric Width'] = f'{tube_and_fabric_width}mm'
+        product_data['Inner Bottom Bar'] = f'{inner_bottom_bar}mm'
+        product_data['Outer Bottom Bar'] = f'{outer_bottom_bar}mm'
+        product_data['Frame Side'] = f'{frame_side}mm'
+        product_data['Fabric Length'] = f'{fabric_length}mm'
+
+    return product_data
+
+def calculate_sizes_perfect_fit_roller_blind(product_data):
+    if product_data.get('Product Type') == 'Perfect Fit Roller Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+
+        if width is None or length is None:
+            product_data['Fabric + Tube'] = 'Invalid Width'
+            product_data['Frame Width'] = 'Invalid Width'
+            product_data['Frame Drop'] = 'Invalid Length'
+            product_data['Fabric Length'] = 'Invalid Length'
+            product_data['Bottom Bar'] = 'Invalid Width'
+            return product_data
+
+        fabric_tube_width = width - 18
+        frame_width = width - 28
+        frame_drop = length - 55
+        fabric_length = length + 200
+        bottom_bar = width - 18
+
+        product_data['Fabric + Tube'] = f'{fabric_tube_width}mm'
+        product_data['Frame Width'] = f'{frame_width}mm'
+        product_data['Frame Drop'] = f'{frame_drop}mm'
+        product_data['Fabric Length'] = f'{fabric_length}mm'
+        product_data['Bottom Bar'] = f'{bottom_bar}mm'
+
+    return product_data
+
+def is_weekend(date):
+    return date.weekday() > 4  # Saturday is 5, Sunday is 6
+
+def is_holiday(date):
+    # Add any holidays here
+    holidays = [
+        datetime(2024, 9, 2).date(),  # Labor Day
+        # Add more holidays as needed
+    ]
+    return date in holidays
+
+def add_working_days(date, working_days):
+    current_date = date
+    while working_days > 0:
+        current_date += timedelta(days=1)
+        if not is_weekend(current_date) and not is_holiday(current_date):
+            working_days -= 1
+    return current_date
+
+def calculate_due_date(delivery_option):
+    today = datetime.now().date()
+    print(f"Calculating due date for: {delivery_option}")  # Debug print
+    if delivery_option == "Fast Track":
+        due_date = add_working_days(today, 3)
+    else:  # Standard Delivery
+        due_date = add_working_days(today, 8)  # Changed to 8 working days
+    print(f"Calculated due date: {due_date}")  # Debug print
+    return due_date
+
+def extract_order_data(driver, customer_name):
+    if "[Sample]" in driver.page_source:
+        return None, None, None
+
+    table = driver.find_element(By.ID, 'data-table')
+    rows = table.find_elements(By.TAG_NAME, 'tr')
+
+    try:
+        notes_panel = driver.find_element(By.XPATH, '//div[@class="panel panel-primary"]/div[@class="panel-body"]')
+        customer_notes = notes_panel.text.strip()
+    except:
+        customer_notes = "No notes found."
+
+    all_product_data = []
+    delivery_option = "Standard Delivery"  # Default to Standard Delivery
+
+    for row in rows[1:]:  # Skip the header row
+        product_data = {'Customer Name': customer_name}
+
+        # Extract basic product information
+        columns = row.find_elements(By.TAG_NAME, 'td')
+        if len(columns) >= 3:
+            product_name_element = columns[1].find_element(By.TAG_NAME, 'a')
+            product_data['Product Name'] = product_name_element.text.strip()
+            product_data['Quantity'] = columns[2].text.strip()
+
+        # Extract detailed product information
+        product_details = row.find_elements(By.XPATH, './/div[@class="basket_custom_option"]')
+        for detail in product_details:
+            label_element = detail.find_element(By.CLASS_NAME, 'basket_custom_option_label')
+            label = label_element.text.strip(':')
+            value_element = detail.find_element(By.XPATH, './/following-sibling::div')
+            value = value_element.text.strip()
+            product_data[label] = value
+            
+            # Check for Fast Track option
+            if label == "FAST TRACK OPTION":
+                if "Fast Track" in value:
+                    delivery_option = "Fast Track"
+                print(f"Fast Track Option found: {value}")  # Debug print
+
+        # Apply the appropriate calculation function based on the product type
+        product_type = product_data.get('Product Type')
+        if product_type == 'Vertical Blind':
+            product_data = calculate_sizes_vertical_blinds(product_data)
+        elif product_type == 'Roller Blind':
+            roller_type = product_data.get('Roller Type')
+            if roller_type in ['Standard Roller', 'Forward Roll Roller']:
+                product_data = calculate_sizes_standard_roller_blinds(product_data)
+            elif roller_type == 'Cassette Roller':
+                product_data = calculate_sizes_cassette_roller_blind(product_data)
+        elif product_type == 'Allusion Blind':
+            product_data = calculate_sizes_allusion_blinds(product_data)
+        elif product_type == 'Grip Fit Roller Blind':
+            product_data = calculate_sizes_grip_fit_roller_blinds(product_data)
+        elif product_type == 'Day & Night Blind':
+            product_data = calculate_sizes_day_and_night_blinds(product_data)
+        elif product_type == 'Perfect Fit Pleated':
+            product_data = calculate_sizes_perfect_fit_pleated(product_data)
+        elif product_type == 'Roman Blind':
+            product_data = calculate_sizes_roman_blinds(product_data)
+        elif product_type == 'Perfect Fit Day & Night Blind':
+            product_data = calculate_sizes_perfect_fit_day_and_night(product_data)
+        elif product_type == 'Perfect Fit Roller Blind':
+            product_data = calculate_sizes_perfect_fit_roller_blind(product_data)
+
+        if 'Height required' in product_data:
+            product_data = calculate_sizes_vertical_blind_slats(product_data)
+
+        all_product_data.append(product_data)
+
+    print(f"Final delivery option: {delivery_option}")  # Debug print
+    return all_product_data, customer_notes, delivery_option
+
+def main():
+    driver = webdriver.Chrome()
+    driver.maximize_window()
+    wait = WebDriverWait(driver, 10)
+
+    driver.get("https://www.emeraldblindsandcurtains.co.uk/z-admin/login/")
+    username_field = driver.find_element(By.CLASS_NAME, "form-control[name='email']")
+    password_field = driver.find_element(By.CLASS_NAME, "form-control[name='password']")
+    username_field.send_keys("shaun_mcgrath451@btinternet.com")
+    password_field.send_keys("zBURS0MzzJ@gwTyiLzGIHgObkChm")
+    password_field.send_keys(Keys.RETURN)
+
+    order_urls = [
+        "https://www.emeraldblindsandcurtains.co.uk/z-admin/orders/view/6351/",
+        # Add more order URLs as needed
+    ]
+
+    for specific_order_url in order_urls:
+        driver.get(specific_order_url)
+        wait.until(EC.visibility_of_element_located((By.XPATH, '//div[@class="customer-description"]/div[@class="name mb10"]')))
+        customer_name = driver.find_element(By.XPATH, '//div[@class="customer-description"]/div[@class="name mb10"]').text.strip()
+        order_data, customer_notes, delivery_option = extract_order_data(driver, customer_name)
+
+        if order_data:
+            safe_customer_name = re.sub(r'[^\w\-_\. ]', '_', customer_name)
+            excel_file_path = f'{safe_customer_name}_extracted_products.xlsx'
+
+            wb = Workbook()
+            wb.remove(wb.active)  # Remove the default sheet
+
+            # Calculate due date
+            due_date = calculate_due_date(delivery_option)
+
+            # Group products by type
+            grouped_data = {}
+            for product in order_data:
+                product_type = product.get('Product Type', 'Other')
+                if product_type not in grouped_data:
+                    grouped_data[product_type] = []
+                grouped_data[product_type].append(product)
+
+            for product_type, products in grouped_data.items():
+                ws = wb.create_sheet(title=product_type[:31])  # Excel sheet names are limited to 31 characters
+                
+                # Add customer name, product type, and due date at the top
+                ws.append([f"Customer: {customer_name}"])
+                ws.append([f"Product Type: {product_type}"])
+                ws.append([f"Delivery Option: {delivery_option}"])
+                ws.append([f"Due Date: {due_date.strftime('%d-%m-%Y')}"])
+                ws.append([])  # Empty row for spacing
+
+                # Define columns to exclude
+                columns_to_exclude = [
+                    'Width', 'Length', 'Measurement Type', 'Product Name', 
+                    'Product Type', 'Brand', 'Measurement Protection'
+                ]
+
+                # Create a DataFrame with only the desired columns
+                columns = [col for col in products[0].keys() if col not in columns_to_exclude]
+                df = pd.DataFrame(products, columns=columns)
+
+                # After appending each row:
+                for r_idx, r in enumerate(dataframe_to_rows(df, index=False, header=True), 6):
+                    ws.append(r)
+                    # Set the EXACT same row height for every single row regardless of product type
+                    ws.row_dimensions[r_idx].height = 30  # Fixed height for all rows
+                    for c_idx, cell in enumerate(r, 1):
+                        cell_obj = ws.cell(row=r_idx, column=c_idx)
+                        cell_obj.alignment = Alignment(
+                            horizontal='center',
+                            vertical='center',
+                            wrap_text=True
+                        )
+                        cell_obj.border = Border(
+                            left=Side(style='thin'),
+                            right=Side(style='thin'),
+                            top=Side(style='thin'),
+                            bottom=Side(style='thin')
+                        )
+                        if r_idx == 6:  # Header row
+                            cell_obj.font = Font(bold=True)
+                            # No special height for header - keep it consistent
+
+                # Adjust column widths
+                for column in ws.columns:
+                    max_length = 0
+                    column_letter = get_column_letter(column[0].column)
+                    for cell in column:
+                        if isinstance(cell, MergedCell):
+                            continue
+                        try:
+                            if cell.value:
+                                longest_word = max(str(cell.value).split(), key=len)
+                                max_length = max(max_length, len(longest_word))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 15)  # Cap width at 15, ensure minimum readability
+                    ws.column_dimensions[column_letter].width = adjusted_width
+
+                # Format the customer name, product type, delivery option, and due date rows
+                for row in range(1, 5):
+                    ws.cell(row=row, column=1).font = Font(bold=True, size=14)
+                    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(columns))
+                    ws.cell(row=row, column=1).alignment = Alignment(horizontal='center')
+
+                ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.75, bottom=0.75, header=0.3, footer=0.3)
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToWidth = 1
+                ws.page_setup.fitToHeight = 0
+
+            # Add customer notes to a separate sheet if they exist
+            if customer_notes:
+                notes_sheet = wb.create_sheet(title='Customer Notes')
+                notes_sheet.append(['Customer Notes'])
+                notes_sheet.append([customer_notes])
+
+            wb.save(excel_file_path)
+            print(f"Excel file created: {excel_file_path}")
+
+                #Print the Excel file
+            try:
+                # Print the Excel file
+                printer_name = win32print.GetDefaultPrinter()
+                win32api.ShellExecute(0, "print", excel_file_path, f'/d:"{printer_name}"', ".", 0)
+                print(f"Sent {excel_file_path} to printer")
+            except Exception as e:
+                print(f"Error printing file: {str(e)}")
+
+        else:
+            print(f"No valid order data extracted from {specific_order_url}.")
+
+    driver.quit()
+
+if __name__ == "__main__":
+    main()
