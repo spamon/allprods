@@ -15,6 +15,7 @@ from openpyxl.cell.cell import MergedCell
 import win32api
 import win32print
 from datetime import datetime, timedelta
+import win32com.client
 
 def convert_to_mm(value):
     print(f"Original value: {value}")  # Debug print
@@ -417,13 +418,22 @@ def calculate_sizes_perfect_fit_roller_blind(product_data):
 def is_weekend(date):
     return date.weekday() > 4  # Saturday is 5, Sunday is 6
 
+from datetime import datetime
+
 def is_holiday(date):
-    # Add any holidays here
+    # List of UK bank holidays in 2025
     holidays = [
-        datetime(2024, 9, 2).date(),  # Labor Day
-        # Add more holidays as needed
+        datetime(2025, 4, 18).date(),  # Good Friday
+        datetime(2025, 4, 21).date(),  # Easter Monday
+        datetime(2025, 5, 5).date(),   # Early May bank holiday
+        datetime(2025, 5, 26).date(),  # Spring bank holiday
+        datetime(2025, 8, 25).date(),  # Summer bank holiday
+        datetime(2025, 12, 25).date(), # Christmas Day
+        datetime(2025, 12, 26).date(), # Boxing Day
     ]
+    
     return date in holidays
+
 
 def add_working_days(date, working_days):
     current_date = date
@@ -469,6 +479,11 @@ def extract_order_data(driver, customer_name):
             product_data['Product Name'] = product_name_element.text.strip()
             product_data['Quantity'] = columns[2].text.strip()
 
+        # Extract fabric name
+        fabric_name_elements = row.find_elements(By.XPATH, './/td/a')
+        fabric_name = fabric_name_elements[1].text.strip() if len(fabric_name_elements) > 1 else 'Unknown Fabric'
+        product_data['Fabric Name'] = fabric_name + f" x{product_data['Quantity']}"
+
         # Extract detailed product information
         product_details = row.find_elements(By.XPATH, './/div[@class="basket_custom_option"]')
         for detail in product_details:
@@ -508,6 +523,8 @@ def extract_order_data(driver, customer_name):
             product_data = calculate_sizes_perfect_fit_day_and_night(product_data)
         elif product_type == 'Perfect Fit Roller Blind':
             product_data = calculate_sizes_perfect_fit_roller_blind(product_data)
+        elif product_type == 'Twist Fit Roller Blind':
+            product_data = calculate_sizes_twist_fit_roller_blinds(product_data)
 
         if 'Height required' in product_data:
             product_data = calculate_sizes_vertical_blind_slats(product_data)
@@ -516,6 +533,38 @@ def extract_order_data(driver, customer_name):
 
     print(f"Final delivery option: {delivery_option}")  # Debug print
     return all_product_data, customer_notes, delivery_option
+
+def calculate_sizes_twist_fit_roller_blinds(product_data):
+    if product_data.get('Product Type') == 'Twist Fit Roller Blind':
+        width_str = product_data.get('Width', '0')
+        width = convert_to_mm(width_str)
+
+        if width is None:
+            product_data['Fabric + Rail Width'] = 'Invalid Width'
+            product_data['Fabric Drop'] = 'Invalid Length'
+            return product_data
+
+        # Calculate Fabric Width and Rail Width
+        fabric_width = rail_width = width - 35
+
+        # Calculate Fabric Drop
+        length_str = product_data.get('Length', '0')
+        length = convert_to_mm(length_str)
+        fabric_drop = length + 300
+
+        # Since Fabric Width and Rail Width are identical, use only one of them
+        product_data['Fabric + Rail Width'] = f'{fabric_width}mm'
+
+        # Set Fabric Drop
+        product_data['Fabric Drop'] = f'{fabric_drop}mm'
+
+        # Remove unwanted keys
+        product_data.pop('Fabric Width', None)
+        product_data.pop('Rail Width', None)
+        product_data.pop('Qty Louvers', None)
+        product_data.pop('Measurement Protection', None)
+
+    return product_data
 
 def main():
     driver = webdriver.Chrome()
@@ -526,11 +575,13 @@ def main():
     username_field = driver.find_element(By.CLASS_NAME, "form-control[name='email']")
     password_field = driver.find_element(By.CLASS_NAME, "form-control[name='password']")
     username_field.send_keys("shaun_mcgrath451@btinternet.com")
-    password_field.send_keys("")aIx@I@*zkAauG8*XzpXzdzayKI95
+    password_field.send_keys("aIx@I@*zkAauG8*XzpXzdzayKI95")
     password_field.send_keys(Keys.RETURN)
 
+    time.sleep(5)
+
     order_urls = [
-        "https://www.emeraldblindsandcurtains.co.uk/z-admin/orders/view/6351/",
+        "https://www.emeraldblindsandcurtains.co.uk/z-admin/orders/view/7492/",
         # Add more order URLs as needed
     ]
 
@@ -568,53 +619,41 @@ def main():
                 ws.append([f"Due Date: {due_date.strftime('%d-%m-%Y')}"])
                 ws.append([])  # Empty row for spacing
 
-                # Define columns to exclude
-                columns_to_exclude = [
-                    'Width', 'Length', 'Measurement Type', 'Product Name', 
-                    'Product Type', 'Brand', 'Measurement Protection'
-                ]
-
-                # Create a DataFrame with only the desired columns
-                columns = [col for col in products[0].keys() if col not in columns_to_exclude]
+                # Create a DataFrame with desired columns, ensuring 'Fabric Name' is first
+                columns = ['Fabric Name'] + [col for col in products[0].keys() if col not in [
+                    'Customer Name', 
+                    'Product Name', 
+                    'Product Type', 
+                    'Brand', 
+                    'Measurement Protection', 
+                    'Fabric Name',
+                    'Width',  # Added this
+                    'Length'  # Added this
+                ]]
                 df = pd.DataFrame(products, columns=columns)
 
-                # After appending each row:
-                for r_idx, r in enumerate(dataframe_to_rows(df, index=False, header=True), 6):
+                for r_idx, r in enumerate(dataframe_to_rows(df, index=False, header=True), 6):  # Start from row 6
                     ws.append(r)
-                    # Set the EXACT same row height for every single row regardless of product type
-                    ws.row_dimensions[r_idx].height = 30  # Fixed height for all rows
                     for c_idx, cell in enumerate(r, 1):
                         cell_obj = ws.cell(row=r_idx, column=c_idx)
-                        cell_obj.alignment = Alignment(
-                            horizontal='center',
-                            vertical='center',
-                            wrap_text=True
-                        )
-                        cell_obj.border = Border(
-                            left=Side(style='thin'),
-                            right=Side(style='thin'),
-                            top=Side(style='thin'),
-                            bottom=Side(style='thin')
-                        )
+                        cell_obj.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell_obj.border = Border(left=Side(style='thin'),
+                                                 right=Side(style='thin'),
+                                                 top=Side(style='thin'),
+                                                 bottom=Side(style='thin'))
                         if r_idx == 6:  # Header row
                             cell_obj.font = Font(bold=True)
-                            # No special height for header - keep it consistent
 
-                # Adjust column widths
+               # Set uniform, smaller column widths
+                total_columns = len(columns)
+                standard_width = 8  # You can adjust this number down if needed
+
                 for column in ws.columns:
-                    max_length = 0
                     column_letter = get_column_letter(column[0].column)
-                    for cell in column:
-                        if isinstance(cell, MergedCell):
-                            continue
-                        try:
-                            if cell.value:
-                                longest_word = max(str(cell.value).split(), key=len)
-                                max_length = max(max_length, len(longest_word))
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 15)  # Cap width at 15, ensure minimum readability
-                    ws.column_dimensions[column_letter].width = adjusted_width
+                    ws.column_dimensions[column_letter].width = standard_width
+
+                # Make first column (Fabric Name) slightly wider
+                ws.column_dimensions['A'].width = standard_width + 3
 
                 # Format the customer name, product type, delivery option, and due date rows
                 for row in range(1, 5):
@@ -622,33 +661,78 @@ def main():
                     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(columns))
                     ws.cell(row=row, column=1).alignment = Alignment(horizontal='center')
 
-                ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.75, bottom=0.75, header=0.3, footer=0.3)
                 ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.paperSize = ws.PAPERSIZE_A4
                 ws.page_setup.fitToWidth = 1
-                ws.page_setup.fitToHeight = 0
+                ws.page_setup.fitToHeight = 1
+                ws.page_setup.scale = None
+                ws.print_options.horizontalCentered = True
+                # Reduce margins even further
+                ws.page_margins = PageMargins(left=0.2, right=0.2, top=0.5, bottom=0.5, header=0.2, footer=0.2)
 
-            # Add customer notes to a separate sheet if they exist
+            # Add customer notes to a separate sheet with better formatting (moved outside the product type loop)
             if customer_notes:
                 notes_sheet = wb.create_sheet(title='Customer Notes')
-                notes_sheet.append(['Customer Notes'])
-                notes_sheet.append([customer_notes])
+                
+                # Set landscape orientation and fit to 1x1 page
+                notes_sheet.page_setup.orientation = notes_sheet.ORIENTATION_LANDSCAPE
+                notes_sheet.page_setup.fitToWidth = 1
+                notes_sheet.page_setup.fitToHeight = 1
+                
+                # Add title
+                notes_sheet['A1'] = 'Customer Notes'
+                notes_sheet['A1'].font = Font(bold=True, size=14)
+                
+                # Add notes in cell A2 with wrapping
+                notes_sheet['A2'] = customer_notes
+                notes_sheet['A2'].alignment = Alignment(wrap_text=True, 
+                                                    vertical='top', 
+                                                    horizontal='left')
+                
+                # Set generous column width (adjust the multiplier if needed)
+                notes_sheet.column_dimensions['A'].width = 120  # Maximum readable width
+                
+                # Set row height to accommodate wrapped text
+                notes_sheet.row_dimensions[2].height = 400  # Adjust this value if needed
+                
+                # Add borders
+                border = Border(left=Side(style='thin'),
+                            right=Side(style='thin'),
+                            top=Side(style='thin'),
+                            bottom=Side(style='thin'))
+                
+                notes_sheet['A1'].border = border
+                notes_sheet['A2'].border = border
 
             wb.save(excel_file_path)
-            print(f"Excel file created: {excel_file_path}")
 
-                #Print the Excel file
-            try:
-                # Print the Excel file
-                printer_name = win32print.GetDefaultPrinter()
-                win32api.ShellExecute(0, "print", excel_file_path, f'/d:"{printer_name}"', ".", 0)
-                print(f"Sent {excel_file_path} to printer")
-            except Exception as e:
-                print(f"Error printing file: {str(e)}")
+            # Print all sheets in the workbook
+            print_excel_workbook(excel_file_path)
 
         else:
             print(f"No valid order data extracted from {specific_order_url}.")
 
     driver.quit()
+
+def print_excel_workbook(file_path):
+    import win32com.client
+    import os
+
+    # Get the absolute path
+    absolute_path = os.path.abspath(file_path)
+    
+    excel = win32com.client.Dispatch("Excel.Application")
+    excel.Visible = False
+    try:
+        print(f"Attempting to open: {absolute_path}")  # Debug print
+        workbook = excel.Workbooks.Open(absolute_path)
+        workbook.PrintOut()
+        workbook.Close(SaveChanges=False)
+    except Exception as e:
+        print(f"Error printing workbook: {e}")
+    finally:
+        excel.Quit()
+        del excel  # Properly clean up COM object
 
 if __name__ == "__main__":
     main()
